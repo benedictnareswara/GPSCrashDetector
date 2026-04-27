@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <MQTT.h>
+#include <time.h>
 
 // UART link from Mega Serial2 -> ESP32 Serial2.
 static const int BRIDGE_RX_PIN = 16;
@@ -8,10 +9,11 @@ static const int BRIDGE_TX_PIN = 17;
 static const uint32_t BRIDGE_BAUD = 115200;
 static const size_t BRIDGE_LINE_BUFFER_SIZE = 180;
 static const uint32_t WIFI_RETRY_MS = 5000;
-static const uint32_t WIFI_SCAN_INTERVAL_MS = 20000;
 static const uint32_t MQTT_RETRY_MS = 4000;
 static const uint32_t HEARTBEAT_MS = 30000;
 static const size_t EVENT_QUEUE_CAPACITY = 24;
+static const uint32_t NTP_RETRY_MS = 5000;
+static const time_t MIN_VALID_EPOCH = 1700000000;
 
 #ifndef WIFI_SSID
 #define WIFI_SSID "YOUR_WIFI_SSID"
@@ -63,21 +65,19 @@ size_t gQueueCount = 0;
 uint32_t gDroppedEventCount = 0;
 
 unsigned long gLastWiFiAttemptMs = 0;
-unsigned long gLastWiFiScanMs = 0;
 unsigned long gLastMqttAttemptMs = 0;
 unsigned long gLastHeartbeatMs = 0;
-wl_status_t gLastWiFiStatus = WL_IDLE_STATUS;
-bool gWiFiWasConnected = false;
+unsigned long gLastNtpAttemptMs = 0;
+bool gNtpConfigured = false;
+bool gNtpSynced = false;
+bool gLoggedUnsyncedTsWarning = false;
 
 char gLine[BRIDGE_LINE_BUFFER_SIZE];
 size_t gLinePos = 0;
 
 bool isAcceptedEventType(const char *eventType) {
   return strcmp(eventType, "MANUAL") == 0 ||
-         strcmp(eventType, "CRASH_START") == 0 ||
-         strcmp(eventType, "CANCELED") == 0 ||
-         strcmp(eventType, "CRASH_CONFIRMED") == 0 ||
-         strcmp(eventType, "CLEAR") == 0;
+         strcmp(eventType, "CRASH_CONFIRMED") == 0;
 }
 
 void eventTopic(char *buffer, size_t size) {
@@ -140,22 +140,52 @@ void printEvent(const BridgeEvent &event, const char *prefix) {
 }
 
 void buildEventJson(const BridgeEvent &event, char *json, size_t jsonSize) {
+  time_t nowSec = time(nullptr);
+  uint64_t tsMs = 0;
+  if (nowSec >= MIN_VALID_EPOCH) {
+    tsMs = static_cast<uint64_t>(nowSec) * 1000ULL;
+    gNtpSynced = true;
+    gLoggedUnsyncedTsWarning = false;
+  }
+
   snprintf(
       json,
       jsonSize,
-      "{\"protocol\":\"v1\",\"device\":\"%s\",\"seq\":%lu,\"event\":\"%s\",\"valid\":%d,\"lat\":%.6f,\"lon\":%.6f,\"age_ms\":%lu,\"tilt_deg\":%.2f,\"accel_g\":%.3f,\"received_ms\":%lu,\"queue\":%u,\"dropped\":%lu}",
+      "{\"device\":\"%s\",\"lat\":%.6f,\"lon\":%.6f,\"valid\":%d,\"ts_ms\":%llu}",
       DEVICE_ID,
-      static_cast<unsigned long>(event.seq),
-      event.eventType,
-      event.valid ? 1 : 0,
       static_cast<double>(event.lat),
       static_cast<double>(event.lon),
-      event.ageMs,
-      static_cast<double>(event.tiltDeg),
-      static_cast<double>(event.accelG),
-      event.receivedMs,
-      static_cast<unsigned int>(gQueueCount),
-      static_cast<unsigned long>(gDroppedEventCount));
+      event.valid ? 1 : 0,
+      static_cast<unsigned long long>(tsMs));
+}
+
+void ensureTimeSynced() {
+  if (WiFi.status() != WL_CONNECTED) {
+    return;
+  }
+
+  const unsigned long nowMs = millis();
+  if (!gNtpConfigured) {
+    configTime(0, 0, "pool.ntp.org", "time.google.com");
+    gNtpConfigured = true;
+    gLastNtpAttemptMs = nowMs;
+    Serial.println("NTP: configuration requested");
+  }
+
+  const time_t nowSec = time(nullptr);
+  if (nowSec >= MIN_VALID_EPOCH) {
+    if (!gNtpSynced) {
+      gNtpSynced = true;
+      Serial.print("NTP: synced epoch=");
+      Serial.println(static_cast<unsigned long>(nowSec));
+    }
+    return;
+  }
+
+  if (nowMs - gLastNtpAttemptMs >= NTP_RETRY_MS) {
+    gLastNtpAttemptMs = nowMs;
+    Serial.println("NTP: waiting for valid time...");
+  }
 }
 
 void publishHeartbeat() {
@@ -182,96 +212,8 @@ void publishHeartbeat() {
   gMqttClient.publish(topic, payload, false, 1);
 }
 
-const char *wifiStatusText(wl_status_t status) {
-  switch (status) {
-    case WL_IDLE_STATUS:
-      return "IDLE";
-    case WL_NO_SSID_AVAIL:
-      return "NO_SSID";
-    case WL_SCAN_COMPLETED:
-      return "SCAN_DONE";
-    case WL_CONNECTED:
-      return "CONNECTED";
-    case WL_CONNECT_FAILED:
-      return "CONNECT_FAILED";
-    case WL_CONNECTION_LOST:
-      return "CONNECTION_LOST";
-    case WL_DISCONNECTED:
-      return "DISCONNECTED";
-    default:
-      return "UNKNOWN";
-  }
-}
-
-void reportWiFiTransitions() {
-  const wl_status_t now = WiFi.status();
-  if (now != gLastWiFiStatus) {
-    Serial.print("WiFi status changed: ");
-    Serial.println(wifiStatusText(now));
-    gLastWiFiStatus = now;
-  }
-
-  if (now == WL_CONNECTED && !gWiFiWasConnected) {
-    gWiFiWasConnected = true;
-    Serial.print("WiFi connected, IP=");
-    Serial.println(WiFi.localIP());
-  }
-
-  if (now != WL_CONNECTED) {
-    gWiFiWasConnected = false;
-  }
-}
-
-void scanNearbySsidsIfNeeded() {
-  if (WiFi.status() != WL_NO_SSID_AVAIL) {
-    return;
-  }
-
-  if (millis() - gLastWiFiScanMs < WIFI_SCAN_INTERVAL_MS) {
-    return;
-  }
-  gLastWiFiScanMs = millis();
-
-  Serial.println("WiFi scan: target SSID not visible, scanning nearby networks...");
-  const int networkCount = WiFi.scanNetworks(false, true);
-  if (networkCount <= 0) {
-    Serial.println("WiFi scan: no networks found.");
-    return;
-  }
-
-  bool targetFound = false;
-  Serial.print("WiFi scan: found ");
-  Serial.print(networkCount);
-  Serial.println(" network(s)");
-
-  for (int i = 0; i < networkCount; ++i) {
-    const String ssid = WiFi.SSID(i);
-    Serial.print("  - ");
-    if (ssid.length() == 0) {
-      Serial.print("<hidden>");
-    } else {
-      Serial.print(ssid);
-    }
-    Serial.print(" RSSI=");
-    Serial.print(WiFi.RSSI(i));
-    Serial.print("dBm");
-    if (ssid == WIFI_SSID) {
-      targetFound = true;
-      Serial.print("  <TARGET>");
-    }
-    Serial.println();
-  }
-
-  if (!targetFound) {
-    Serial.print("WiFi scan: target '");
-    Serial.print(WIFI_SSID);
-    Serial.println("' still not visible. Check 2.4GHz/visibility settings.");
-  }
-}
-
 void ensureWiFiConnected() {
-  const wl_status_t status = WiFi.status();
-  if (status == WL_CONNECTED) {
+  if (WiFi.status() == WL_CONNECTED) {
     return;
   }
 
@@ -280,15 +222,8 @@ void ensureWiFiConnected() {
   }
   gLastWiFiAttemptMs = millis();
 
-  Serial.print("WiFi: attempting connect to SSID '");
-  Serial.print(WIFI_SSID);
-  Serial.print("' (status=");
-  Serial.print(wifiStatusText(status));
-  Serial.println(")");
-
-  WiFi.disconnect();
+  Serial.println("WiFi: attempting connect...");
   WiFi.mode(WIFI_STA);
-  WiFi.setSleep(false);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 }
 
@@ -333,6 +268,12 @@ void publishQueuedEvent() {
   char payload[360];
   eventTopic(topic, sizeof(topic));
   buildEventJson(event, payload, sizeof(payload));
+  if (!gNtpSynced && !gLoggedUnsyncedTsWarning) {
+    Serial.println("MQTT: time not synced yet, publishing ts_ms=0");
+    gLoggedUnsyncedTsWarning = true;
+  }
+  Serial.print("MQTT payload: ");
+  Serial.println(payload);
   const bool ok = gMqttClient.publish(topic, payload, false, 1);
   if (!ok) {
     Serial.println("MQTT: publish failed, will retry");
@@ -546,7 +487,6 @@ void setup() {
 #endif
 
   WiFi.mode(WIFI_STA);
-  WiFi.setSleep(false);
   gMqttClient.begin(MQTT_BROKER, MQTT_PORT, gNetClient);
 
   delay(200);
@@ -559,9 +499,8 @@ void loop() {
     handleBridgeByte(static_cast<char>(Serial2.read()));
   }
 
-  reportWiFiTransitions();
-  scanNearbySsidsIfNeeded();
   ensureWiFiConnected();
+  ensureTimeSynced();
   gMqttClient.loop();
   ensureMqttConnected();
   publishQueuedEvent();
