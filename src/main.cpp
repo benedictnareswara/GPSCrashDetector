@@ -327,6 +327,12 @@ bool detectButtonPressedEdge() {
   return false;
 }
 
+bool isGpsFreshAndValid() {
+  unsigned long now = millis();
+  unsigned long age = now - gLatestFix.updatedMs;
+  return gLatestFix.valid && (age < GPS_FIX_STALE_MS);
+}
+
 void enterStandbyFromCrash(const char *eventType) {
   setBuzzer(false);
   gManualBuzzerLatched = false;
@@ -351,11 +357,24 @@ void handleStandbyState(bool buttonPressed, bool crashTrigger) {
   }
 
   if (!gManualBuzzerLatched) {
-    gManualBuzzerLatched = true;
-    setBuzzer(true);
-    publishBridgeEvent("MANUAL", gLastTiltDeg, gLastAccelMagnitudeG);
-    Serial.println("STATE: STANDBY manual trigger -> buzzer ON");
-    return;
+    if (isGpsFreshAndValid()) {
+      gManualBuzzerLatched = true;
+      setBuzzer(true);
+      publishBridgeEvent("MANUAL", gLastTiltDeg, gLastAccelMagnitudeG);
+      Serial.println("STATE: STANDBY manual trigger (GPS valid) -> buzzer ON");
+      return;
+    } else {
+      // GPS not available - give user feedback
+      setBuzzer(true);
+      delay(100);
+      setBuzzer(false);
+      delay(100);
+      setBuzzer(true);
+      delay(100);
+      setBuzzer(false);
+      Serial.println("STATE: STANDBY manual trigger attempted but GPS not fresh/valid");
+      return;
+    }
   }
 
   gManualBuzzerLatched = false;
