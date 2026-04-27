@@ -45,6 +45,7 @@ See `PROTOCOL.md` for full details.
   - RX2: GPIO16
   - TX2: GPIO17
 - Ensure voltage-level compatibility between Mega (5V) and ESP32 (3.3V), especially Mega TX -> ESP32 RX path.
+- Full wiring guide and diagram: `WIRING.md`
 
 ## Build and Upload
 

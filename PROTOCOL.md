@@ -22,6 +22,30 @@ Fields:
 
 ESP32 parser currently accepts both formats.
 
+## MQTT Gateway Contract (ESP32)
+- MQTT event topic: `vestmicro/v1/devices/<device_id>/events`
+- MQTT status topic: `vestmicro/v1/devices/<device_id>/status`
+- Event payload shape (JSON):
+	- `protocol` (`v1`)
+	- `device`
+	- `seq`
+	- `event`
+	- `valid`
+	- `lat`
+	- `lon`
+	- `age_ms`
+	- `tilt_deg`
+	- `accel_g`
+	- `received_ms`
+	- `queue`
+	- `dropped`
+
+## ESP32 Reliability Rules
+- Queue incoming events while MQTT is disconnected.
+- Replay queued events in FIFO order when MQTT reconnects.
+- Queue is bounded; when full, drop oldest event and increment `dropped` counter.
+- Status heartbeat is published every 30 seconds while connected.
+
 ## Trigger Model on Mega
 - Crash trigger when: `tilt >= 35.0` OR `accel >= 1.35g`
 - Crash cancel window: 10 seconds after `CRASH_START`
