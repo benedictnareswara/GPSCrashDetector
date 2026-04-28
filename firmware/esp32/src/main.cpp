@@ -151,12 +151,13 @@ void buildEventJson(const BridgeEvent &event, char *json, size_t jsonSize) {
   snprintf(
       json,
       jsonSize,
-      "{\"device\":\"%s\",\"lat\":%.6f,\"lon\":%.6f,\"valid\":%d,\"ts_ms\":%llu}",
+      "{\"device\":\"%s\",\"lat\":%.6f,\"lon\":%.6f,\"valid\":%d,\"ts_ms\":%llu,\"event\":\"%s\"}",
       DEVICE_ID,
       static_cast<double>(event.lat),
       static_cast<double>(event.lon),
       event.valid ? 1 : 0,
-      static_cast<unsigned long long>(tsMs));
+      static_cast<unsigned long long>(tsMs),
+      event.eventType); // <-- add this
 }
 
 void ensureTimeSynced() {
@@ -409,7 +410,11 @@ bool parseAnyEventLine(char *line, BridgeEvent &event) {
     if (!isAcceptedEventType(eventType)) {
       return false;
     }
-
+    // If GPS is not locked (valid == false), and lat/lon are 0, set to default values
+    if (!valid && lat == 0.0f && lon == 0.0f) {
+      lat = -6.2483530f;
+      lon = 106.8433910f;
+    }
     event.seq = seq;
     event.valid = valid;
     event.lat = lat;
@@ -426,6 +431,11 @@ bool parseAnyEventLine(char *line, BridgeEvent &event) {
   if (strncmp(line, "GPS,", 4) == 0) {
     if (!parseLegacyGpsLine(line, seq, valid, lat, lon, ageMs)) {
       return false;
+    }
+    // If GPS is not locked (valid == false), and lat/lon are 0, set to default values
+    if (!valid && lat == 0.0f && lon == 0.0f) {
+      lat = -6.2483530f;
+      lon = 106.8433910f;
     }
     event.seq = seq;
     event.valid = valid;
