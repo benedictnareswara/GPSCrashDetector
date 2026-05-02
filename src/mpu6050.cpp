@@ -148,7 +148,8 @@ float computeTiltDegrees(const MpuRawData &data) {
     cosine = -1.0f;
   }
 
-  return acosf(cosine) * (180.0f / PI);
+  const float angleFromZDeg = acosf(cosine) * (180.0f / PI);
+  return fabsf(90.0f - angleFromZDeg);
 }
 
 float computeAccelMagnitudeG(const MpuRawData &data) {

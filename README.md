@@ -31,7 +31,7 @@ See `PROTOCOL.md` for full details.
 
 ## Trigger Logic (Mega)
 
-- Crash trigger when `tilt >= 35.0` OR `accel >= 1.35g`
+- Crash trigger when upright-deviation `tilt >= 35.0` OR `accel >= 1.35g`
 - Cancel window: 10 seconds after `CRASH_START`
 - Cooldown after crash exit: 3 seconds
 - Manual standby button flow:

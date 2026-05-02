@@ -14,7 +14,7 @@ Fields:
 - `valid`: `1` if GPS fix fresh, otherwise `0`
 - `lat`, `lon`: decimal degrees
 - `age_ms`: age of GPS fix in milliseconds; `0` when invalid
-- `tilt_deg`: computed tilt in degrees
+- `tilt_deg`: computed deviation in degrees from the backpack/upright MPU orientation
 - `accel_g`: acceleration magnitude in g
 
 ## Legacy Packet (migration support)
@@ -47,7 +47,7 @@ ESP32 parser currently accepts both formats.
 - Status heartbeat is published every 30 seconds while connected.
 
 ## Trigger Model on Mega
-- Crash trigger when: `tilt >= 35.0` OR `accel >= 1.35g`
+- Crash trigger when: upright-deviation `tilt >= 35.0` OR `accel >= 1.35g`
 - Crash cancel window: 10 seconds after `CRASH_START`
 - If button pressed inside window: emit `CANCELED`, buzzer OFF, return standby
 - If window expires without button press: emit `CRASH_CONFIRMED`, buzzer stays ON until button press

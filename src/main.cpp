@@ -13,6 +13,7 @@ namespace {
 unsigned long gLastMpuReadMs = 0;
 float gLastTiltDeg = 0.0f;
 float gLastAccelMagnitudeG = 0.0f;
+uint8_t gImpactHighStreak = 0;
 }
 
 void setBuzzer(bool enabled) {
@@ -44,7 +45,7 @@ void setup() {
   Serial.println("NEO-6M on Serial1 (RX1=19, TX1=18) at 9600 baud");
   Serial.println("ESP32 bridge on Serial2 (RX2=17, TX2=16) at 115200 baud");
   Serial.println("Button pin=7 (INPUT_PULLUP), buzzer pin=6");
-  Serial.println("Crash trigger: tilt>=35.0 deg OR accel>=1.35g");
+  Serial.println("Crash trigger: tilt>=45.0 deg OR impact accel>=1.8g (2 consecutive samples)");
   Serial.println("Crash cancel window: 5 seconds");
 
   initMpu6050();
@@ -84,7 +85,17 @@ void loop() {
     float accelMagnitudeG = computeAccelMagnitudeG(data);
     gLastTiltDeg = tiltDeg;
     gLastAccelMagnitudeG = accelMagnitudeG;
-    const bool crashTrigger = (tiltDeg >= TILT_TRIGGER_DEG) || (accelMagnitudeG >= ACCEL_TRIGGER_G);
+    const bool tiltTrigger = (tiltDeg >= TILT_TRIGGER_DEG);
+    const bool accelHigh = (accelMagnitudeG >= ACCEL_TRIGGER_G);
+    if (accelHigh) {
+      if (gImpactHighStreak < 2) {
+        gImpactHighStreak++;
+      }
+    } else {
+      gImpactHighStreak = 0;
+    }
+    const bool confirmedImpactTrigger = (gImpactHighStreak >= 2);
+    const bool crashTrigger = tiltTrigger || confirmedImpactTrigger;
     updateSafetyStateMachine(buttonPressed,
                              crashTrigger,
                              gLastTiltDeg,
@@ -114,6 +125,18 @@ void loop() {
 
     Serial.print(" | ACCEL g: ");
     Serial.print(accelMagnitudeG, 3);
+    Serial.print(" (streak=");
+    Serial.print(gImpactHighStreak);
+    Serial.print(", impact_confirmed=");
+    Serial.print(confirmedImpactTrigger ? 1 : 0);
+    Serial.print(')');
+
+    Serial.print(" | TRIGGERS: tilt=");
+    Serial.print(tiltTrigger ? 1 : 0);
+    Serial.print(" impact=");
+    Serial.print(confirmedImpactTrigger ? 1 : 0);
+    Serial.print(" crash=");
+    Serial.print(crashTrigger ? 1 : 0);
 
     Serial.print(" | GPS: ");
     const bool freshFix = hasFreshFix();
