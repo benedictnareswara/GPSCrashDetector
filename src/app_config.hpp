@@ -1,3 +1,10 @@
+// ---------------------------------------------
+// FILE: app_config.hpp
+// PURPOSE: Central configuration for all hardware pins, timing,
+//          and crash-detection thresholds used across the system.
+// HOW IT WORKS: Defines compile-time constants so every module
+//               shares the same tuning values without magic numbers.
+// ---------------------------------------------
 #pragma once
 
 #include <Arduino.h>
@@ -16,5 +23,19 @@ inline constexpr uint32_t BUTTON_DEBOUNCE_MS = 40;
 inline constexpr uint32_t EVENT_COOLDOWN_MS = 3000;
 
 inline constexpr float MPU_ACCEL_LSB_PER_G = 16384.0f;
-inline constexpr float TILT_TRIGGER_DEG = 45.0f;
-inline constexpr float ACCEL_TRIGGER_G = 1.8f;
+
+// I2C bit-bang configuration (Mega 2560: SDA=pin 20/PD1, SCL=pin 21/PD0)
+inline constexpr uint8_t I2C_SDA_PIN = 20;
+inline constexpr uint8_t I2C_SCL_PIN = 21;
+inline constexpr uint8_t I2C_HALF_CYCLE_US = 5;  // ~100 kHz clock
+
+// MPU6050 I2C addresses (AD0 pin selects between the two)
+inline constexpr uint8_t MPU6050_DEFAULT_ADDRESS = 0x68;
+inline constexpr uint8_t MPU6050_ALT_ADDRESS = 0x69;
+
+// G-force impact detection thresholds
+// A crash is detected when acceleration spikes above GFORCE_SPIKE_THRESHOLD_G
+// and then drops below GFORCE_STOP_THRESHOLD_G within GFORCE_SPIKE_WINDOW_MS.
+inline constexpr float GFORCE_SPIKE_THRESHOLD_G = 2.5f;
+inline constexpr float GFORCE_STOP_THRESHOLD_G = 1.2f;
+inline constexpr uint32_t GFORCE_SPIKE_WINDOW_MS = 500;

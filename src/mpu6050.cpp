@@ -1,59 +1,44 @@
+// ---------------------------------------------
+// FILE: mpu6050.cpp
+// PURPOSE: Drives the MPU6050 accelerometer/gyroscope over I2C.
+// HOW IT WORKS: Detects the sensor address, wakes it up, reads 14 bytes
+//               of raw accel/gyro/temp data, and converts acceleration
+//               into G-force magnitude for crash detection.
+// ---------------------------------------------
 #include "mpu6050.hpp"
 
-#include <Wire.h>
 #include <math.h>
 
 #include "app_config.hpp"
+#include "i2c_bitbang.hpp"
 
 namespace {
-uint8_t gMpuAddress = 0x68;
+
+uint8_t gMpuAddress = MPU6050_DEFAULT_ADDRESS;
 bool gMpuReady = false;
-int gLastTxError = 0;
-int gLastRxCount = 0;
 
-const uint8_t REG_WHO_AM_I = 0x75;
-const uint8_t REG_PWR_MGMT_1 = 0x6B;
-const uint8_t REG_ACCEL_XOUT_H = 0x3B;
+// MPU6050 register map (only the registers we use)
+constexpr uint8_t REG_ACCEL_XOUT_H = 0x3B;
+constexpr uint8_t REG_PWR_MGMT_1   = 0x6B;
+constexpr uint8_t REG_WHO_AM_I     = 0x75;
 
-bool writeRegister(uint8_t reg, uint8_t value) {
-  Wire.beginTransmission(gMpuAddress);
-  Wire.write(reg);
-  Wire.write(value);
-  gLastTxError = Wire.endTransmission();
-  return gLastTxError == 0;
-}
+// Expected WHO_AM_I value for genuine MPU6050
+constexpr uint8_t EXPECTED_WHO_AM_I = 0x68;
 
-bool readBytes(uint8_t startReg, uint8_t *buffer, size_t length) {
-  Wire.beginTransmission(gMpuAddress);
-  Wire.write(startReg);
-  gLastTxError = Wire.endTransmission(false);
-  if (gLastTxError != 0) {
-    gLastRxCount = 0;
-    return false;
-  }
+// PWR_MGMT_1 value to wake the sensor (clear SLEEP bit)
+constexpr uint8_t PWR_MGMT_WAKE = 0x00;
 
-  size_t received = Wire.requestFrom(gMpuAddress, static_cast<uint8_t>(length));
-  gLastRxCount = static_cast<int>(received);
-  if (received != length) {
-    return false;
-  }
+// Burst read length: 3×accel + temp + 3×gyro = 14 bytes
+constexpr uint8_t SENSOR_DATA_LENGTH = 14;
 
-  for (size_t i = 0; i < length; i++) {
-    buffer[i] = static_cast<uint8_t>(Wire.read());
-  }
-  return true;
-}
-
-bool probeAddress(uint8_t address) {
-  Wire.beginTransmission(address);
-  int tx = Wire.endTransmission();
-  return tx == 0;
-}
+// Temperature conversion constants from the MPU6050 datasheet
+constexpr float TEMP_SENSITIVITY = 340.0f;
+constexpr float TEMP_OFFSET_C    = 36.53f;
 
 bool detectMpuAddress(uint8_t &address) {
-  const uint8_t candidates[] = {0x68, 0x69};
+  constexpr uint8_t candidates[] = {MPU6050_DEFAULT_ADDRESS, MPU6050_ALT_ADDRESS};
   for (uint8_t i = 0; i < sizeof(candidates); i++) {
-    if (probeAddress(candidates[i])) {
+    if (i2cProbeAddress(candidates[i])) {
       address = candidates[i];
       return true;
     }
@@ -61,14 +46,6 @@ bool detectMpuAddress(uint8_t &address) {
   return false;
 }
 
-bool readRegister(uint8_t reg, uint8_t &value) {
-  uint8_t b = 0;
-  if (!readBytes(reg, &b, 1)) {
-    return false;
-  }
-  value = b;
-  return true;
-}
 }  // namespace
 
 bool initMpu6050() {
@@ -83,11 +60,8 @@ bool initMpu6050() {
   Serial.println(gMpuAddress, HEX);
 
   uint8_t whoAmI = 0;
-  if (!readRegister(REG_WHO_AM_I, whoAmI)) {
-    Serial.print("WHO_AM_I read failed. txErr=");
-    Serial.print(gLastTxError);
-    Serial.print(" rxCount=");
-    Serial.println(gLastRxCount);
+  if (!i2cReadBytes(gMpuAddress, REG_WHO_AM_I, &whoAmI, 1)) {
+    Serial.println("WHO_AM_I read failed.");
     gMpuReady = false;
     return false;
   }
@@ -95,13 +69,12 @@ bool initMpu6050() {
   Serial.print("WHO_AM_I = 0x");
   Serial.println(whoAmI, HEX);
 
-  if (whoAmI != 0x68) {
+  if (whoAmI != EXPECTED_WHO_AM_I) {
     Serial.println("Unexpected WHO_AM_I value.");
   }
 
-  if (!writeRegister(REG_PWR_MGMT_1, 0x00)) {
-    Serial.print("Failed to wake MPU6050. txErr=");
-    Serial.println(gLastTxError);
+  if (!i2cWriteRegister(gMpuAddress, REG_PWR_MGMT_1, PWR_MGMT_WAKE)) {
+    Serial.println("Failed to wake MPU6050.");
     gMpuReady = false;
     return false;
   }
@@ -116,58 +89,28 @@ bool isMpuReady() {
 }
 
 bool readMpuRaw(MpuRawData &data) {
-  uint8_t raw[14];
-  if (!readBytes(REG_ACCEL_XOUT_H, raw, sizeof(raw))) {
+  uint8_t raw[SENSOR_DATA_LENGTH];
+  if (!i2cReadBytes(gMpuAddress, REG_ACCEL_XOUT_H, raw, SENSOR_DATA_LENGTH)) {
     return false;
   }
 
-  data.ax = static_cast<int16_t>((raw[0] << 8) | raw[1]);
-  data.ay = static_cast<int16_t>((raw[2] << 8) | raw[3]);
-  data.az = static_cast<int16_t>((raw[4] << 8) | raw[5]);
-  data.temp = static_cast<int16_t>((raw[6] << 8) | raw[7]);
-  data.gx = static_cast<int16_t>((raw[8] << 8) | raw[9]);
-  data.gy = static_cast<int16_t>((raw[10] << 8) | raw[11]);
-  data.gz = static_cast<int16_t>((raw[12] << 8) | raw[13]);
+  data.ax   = static_cast<int16_t>((raw[0]  << 8) | raw[1]);
+  data.ay   = static_cast<int16_t>((raw[2]  << 8) | raw[3]);
+  data.az   = static_cast<int16_t>((raw[4]  << 8) | raw[5]);
+  data.temp = static_cast<int16_t>((raw[6]  << 8) | raw[7]);
+  data.gx   = static_cast<int16_t>((raw[8]  << 8) | raw[9]);
+  data.gy   = static_cast<int16_t>((raw[10] << 8) | raw[11]);
+  data.gz   = static_cast<int16_t>((raw[12] << 8) | raw[13]);
   return true;
-}
-
-float computeTiltDegrees(const MpuRawData &data) {
-  const float ax = static_cast<float>(data.ax);
-  const float ay = static_cast<float>(data.ay);
-  const float az = static_cast<float>(data.az);
-  const float magnitude = sqrtf(ax * ax + ay * ay + az * az);
-
-  if (magnitude < 1.0f) {
-    return 0.0f;
-  }
-
-  float cosine = az / magnitude;
-  if (cosine > 1.0f) {
-    cosine = 1.0f;
-  } else if (cosine < -1.0f) {
-    cosine = -1.0f;
-  }
-
-  const float angleFromZDeg = acosf(cosine) * (180.0f / PI);
-  return fabsf(90.0f - angleFromZDeg);
 }
 
 float computeAccelMagnitudeG(const MpuRawData &data) {
   const float ax = static_cast<float>(data.ax);
   const float ay = static_cast<float>(data.ay);
   const float az = static_cast<float>(data.az);
-  const float rawMag = sqrtf(ax * ax + ay * ay + az * az);
-  return rawMag / MPU_ACCEL_LSB_PER_G;
+  return sqrtf(ax * ax + ay * ay + az * az) / MPU_ACCEL_LSB_PER_G;
 }
 
 float rawTempToC(int16_t rawTemp) {
-  return static_cast<float>(rawTemp) / 340.0f + 36.53f;
-}
-
-int getMpuLastTxError() {
-  return gLastTxError;
-}
-
-int getMpuLastRxCount() {
-  return gLastRxCount;
+  return static_cast<float>(rawTemp) / TEMP_SENSITIVITY + TEMP_OFFSET_C;
 }

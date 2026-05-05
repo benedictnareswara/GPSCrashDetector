@@ -1,3 +1,11 @@
+// ---------------------------------------------
+// FILE: bridge_protocol.cpp
+// PURPOSE: Formats and transmits event packets to the ESP32 over Serial2.
+// HOW IT WORKS: Builds a CSV line in the format expected by the ESP32 parser
+//               and sends it over UART. Also logs a diagnostic echo to Serial.
+// ⚠️ PROTECTED LAYER: Any changes to the CSV format, field order, or
+//    transmission timing will break the ESP32 dashboard. See PROTOCOL.md.
+// ---------------------------------------------
 #include "bridge_protocol.hpp"
 
 #include "gps_parser.hpp"
@@ -11,7 +19,7 @@ void publishBridgeEvent(const char *eventType, float tiltDeg, float accelMagnitu
   const GpsFix &fix = getLatestFix();
   const unsigned long ageMs = freshFix ? (millis() - fix.updatedMs) : 0;
 
-  // CSV event format for ESP32 parser:
+  // CSV event format for ESP32 parser (DO NOT MODIFY without updating PROTOCOL.md):
   // EVT,<seq>,<event>,<valid>,<lat>,<lon>,<age_ms>,<tilt_deg>,<accel_g>
   Serial2.print("EVT,");
   Serial2.print(gBridgeSequence++);

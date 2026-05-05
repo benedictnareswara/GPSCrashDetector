@@ -1,8 +1,17 @@
+// ---------------------------------------------
+// FILE: safety_fsm.cpp
+// PURPOSE: Implements the safety alert state machine for crash handling.
+// HOW IT WORKS: Manages three states (STANDBY → CRASH_PENDING → CRASH_CONFIRMED).
+//               When a crash trigger fires, a 5-second cancel window starts.
+//               If not cancelled by button press, the event is published to
+//               the ESP bridge and the buzzer latches on until acknowledged.
+// ---------------------------------------------
 #include "safety_fsm.hpp"
 
 #include "app_config.hpp"
 
 namespace {
+
 AlertState gAlertState = ALERT_STANDBY;
 bool gManualBuzzerLatched = false;
 bool gIncidentPublished = false;
@@ -53,12 +62,13 @@ void handleStandbyState(bool buttonPressed, bool crashTrigger, void (*setBuzzer)
 }
 
 void handleCrashPendingState(bool buttonPressed,
-                             float lastTiltDeg,
                              float lastAccelMagnitudeG,
                              void (*setBuzzer)(bool),
                              void (*publishEvent)(const char *, float, float)) {
   const unsigned long now = millis();
   const unsigned long elapsedMs = now - gCrashWindowStartMs;
+
+  // Log countdown once per second
   if (gLastPendingCountdownLogMs == 0 || (now - gLastPendingCountdownLogMs) >= 1000) {
     const unsigned long remainingMs =
         (elapsedMs < CRASH_CANCEL_WINDOW_MS) ? (CRASH_CANCEL_WINDOW_MS - elapsedMs) : 0;
@@ -84,30 +94,36 @@ void handleCrashPendingState(bool buttonPressed,
     return;
   }
 
-  if (elapsedMs >= CRASH_CANCEL_WINDOW_MS) {
-    gAlertState = ALERT_CRASH_CONFIRMED;
-    gManualBuzzerLatched = true;
-    setBuzzer(true);
-    if (!gIncidentPublished) {
-      if (gPendingSource == PENDING_SOURCE_MANUAL) {
-        publishEvent("MANUAL", lastTiltDeg, lastAccelMagnitudeG);
-        Serial.println("STATE: MANUAL_CONFIRMED -> buzzer latched ON");
-      } else {
-        publishEvent("CRASH_CONFIRMED", lastTiltDeg, lastAccelMagnitudeG);
-        Serial.println("STATE: CRASH_CONFIRMED -> buzzer latched ON");
-      }
-      gIncidentPublished = true;
-    }
-    gPendingSource = PENDING_SOURCE_CRASH;
+  if (elapsedMs < CRASH_CANCEL_WINDOW_MS) {
+    return;
   }
+
+  // Window expired — confirm the incident
+  gAlertState = ALERT_CRASH_CONFIRMED;
+  gManualBuzzerLatched = true;
+  setBuzzer(true);
+
+  if (!gIncidentPublished) {
+    if (gPendingSource == PENDING_SOURCE_MANUAL) {
+      publishEvent("MANUAL", 0.0f, lastAccelMagnitudeG);
+      Serial.println("STATE: MANUAL_CONFIRMED -> buzzer latched ON");
+    } else {
+      publishEvent("CRASH_CONFIRMED", 0.0f, lastAccelMagnitudeG);
+      Serial.println("STATE: CRASH_CONFIRMED -> buzzer latched ON");
+    }
+    gIncidentPublished = true;
+  }
+  gPendingSource = PENDING_SOURCE_CRASH;
 }
 
 void handleCrashConfirmedState(bool buttonPressed, void (*setBuzzer)(bool)) {
-  if (buttonPressed) {
-    enterStandbyFromCrash(setBuzzer);
-    Serial.println("STATE: CRASH_CONFIRMED acknowledged -> buzzer OFF (local clear, no ESP send)");
+  if (!buttonPressed) {
+    return;
   }
+  enterStandbyFromCrash(setBuzzer);
+  Serial.println("STATE: CRASH_CONFIRMED acknowledged -> buzzer OFF (local clear, no ESP send)");
 }
+
 }  // namespace
 
 void initSafetyStateMachine() {
@@ -122,7 +138,6 @@ void initSafetyStateMachine() {
 
 void updateSafetyStateMachine(bool buttonPressed,
                               bool crashTrigger,
-                              float lastTiltDeg,
                               float lastAccelMagnitudeG,
                               void (*setBuzzer)(bool),
                               void (*publishEvent)(const char *, float, float)) {
@@ -131,11 +146,7 @@ void updateSafetyStateMachine(bool buttonPressed,
       handleStandbyState(buttonPressed, crashTrigger, setBuzzer);
       break;
     case ALERT_CRASH_PENDING:
-      handleCrashPendingState(buttonPressed,
-                              lastTiltDeg,
-                              lastAccelMagnitudeG,
-                              setBuzzer,
-                              publishEvent);
+      handleCrashPendingState(buttonPressed, lastAccelMagnitudeG, setBuzzer, publishEvent);
       break;
     case ALERT_CRASH_CONFIRMED:
       handleCrashConfirmedState(buttonPressed, setBuzzer);
